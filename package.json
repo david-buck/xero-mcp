@@ -1,0 +1,19 @@
+{
+  "name": "xero-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Minimal local Xero MCP server for draft invoices",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "auth": "node --env-file=.env src/auth.js",
+    "check": "node --check src/index.js && node --check src/auth.js && node --check src/xero.js && node --check src/token-store.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  }
+}
