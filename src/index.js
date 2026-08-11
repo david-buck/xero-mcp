@@ -3,7 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { xeroRequest } from "./xero.js";
 
-const server = new McpServer({ name: "xero-mcp", version: "0.1.0" });
+const server = new McpServer({ name: "xero-mcp", version: "0.2.0" });
 
 const lineItemSchema = z.object({
   description: z.string().min(1).max(4000),
@@ -58,6 +58,18 @@ function toXeroLineItems(lineItems) {
   }));
 }
 
+function contactSalesDefaults(contact) {
+  return {
+    contactId: contact.ContactID,
+    name: contact.Name,
+    email: contact.EmailAddress,
+    salesDefaultAccountCode: contact.SalesDefaultAccountCode,
+    accountsReceivableTaxType: contact.AccountsReceivableTaxType,
+    salesDefaultLineAmountType: contact.SalesDefaultLineAmountType,
+    defaultCurrency: contact.DefaultCurrency,
+  };
+}
+
 async function getDraftInvoice(invoiceId) {
   const result = await xeroRequest("GET", `/Invoices/${encodeURIComponent(invoiceId)}`);
   const invoice = result.Invoices?.[0];
@@ -91,6 +103,79 @@ server.registerTool(
         accountNumber: contact.AccountNumber,
         status: contact.ContactStatus,
       })));
+    } catch (error) {
+      return apiError(error);
+    }
+  },
+);
+
+server.registerTool(
+  "xero_get_contact_defaults",
+  {
+    title: "Get Xero contact sales defaults",
+    description: "Get a contact's invoice-relevant sales defaults, including its preferred account code and tax type.",
+    inputSchema: { contactId: z.string().uuid().describe("Xero ContactID") },
+  },
+  async ({ contactId }) => {
+    try {
+      const result = await xeroRequest("GET", `/Contacts/${encodeURIComponent(contactId)}`);
+      const contact = result.Contacts?.[0];
+      if (!contact) throw new Error(`Xero did not return contact ${contactId}.`);
+      return text(contactSalesDefaults(contact));
+    } catch (error) {
+      return apiError(error);
+    }
+  },
+);
+
+server.registerTool(
+  "xero_list_revenue_accounts",
+  {
+    title: "List Xero revenue accounts",
+    description: "List active revenue/sales accounts and their valid account codes for draft invoice line items.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const result = await xeroRequest("GET", "/Accounts");
+      const accounts = (result.Accounts ?? [])
+        .filter((account) => account.Status === "ACTIVE")
+        .filter((account) => account.Class === "REVENUE" || account.Type === "REVENUE" || account.Type === "SALES")
+        .sort((left, right) => String(left.Code ?? "").localeCompare(String(right.Code ?? "")))
+        .map((account) => ({
+          accountId: account.AccountID,
+          code: account.Code,
+          name: account.Name,
+          type: account.Type,
+          defaultTaxType: account.TaxType,
+          description: account.Description,
+        }));
+      return text(accounts);
+    } catch (error) {
+      return apiError(error);
+    }
+  },
+);
+
+server.registerTool(
+  "xero_list_revenue_tax_rates",
+  {
+    title: "List Xero revenue tax rates",
+    description: "List active tax types that Xero says can be applied to revenue invoice lines.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      const result = await xeroRequest("GET", "/TaxRates");
+      const taxRates = (result.TaxRates ?? [])
+        .filter((taxRate) => taxRate.Status === "ACTIVE" && String(taxRate.CanApplyToRevenue).toLowerCase() === "true")
+        .map((taxRate) => ({
+          taxType: taxRate.TaxType,
+          name: taxRate.Name,
+          rate: taxRate.DisplayTaxRate ?? taxRate.EffectiveRate,
+          canApplyToRevenue: taxRate.CanApplyToRevenue,
+        }));
+      return text(taxRates);
     } catch (error) {
       return apiError(error);
     }

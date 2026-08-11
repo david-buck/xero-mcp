@@ -35,7 +35,7 @@ The point is to make the useful bit easy without giving an AI a route to finalis
 The app requests the smallest useful set of scopes:
 
 ```text
-offline_access accounting.contacts.read accounting.invoices
+offline_access accounting.contacts.read accounting.invoices accounting.settings.read
 ```
 
 ## First run
@@ -70,12 +70,17 @@ Restart Codex. The server uses stdio, so it stays quiet unless there is somethin
 | Tool | What it does |
 | --- | --- |
 | `xero_find_contact` | Search contacts by name or email and return their Xero Contact ID. |
+| `xero_get_contact_defaults` | Get a contact's default sales account code, tax type, currency, and line-amount preference. |
+| `xero_list_revenue_accounts` | List active revenue/sales account codes that can be used on invoice lines. |
+| `xero_list_revenue_tax_rates` | List active tax types that Xero permits on revenue lines. |
 | `xero_list_invoices` | List recent invoices, optionally for one contact. |
 | `xero_get_invoice` | Fetch an invoice including its line items. |
 | `xero_create_draft_invoice` | Make a sales invoice with `Status: DRAFT`. |
 | `xero_update_draft_invoice` | Change a draft invoice only. |
 
 Invoice line items take a description, quantity, unit amount, account code, and optional tax type. Dates use `YYYY-MM-DD`. Inputs are schema-validated, and Xero API errors are returned intact instead of being papered over.
+
+When drafting, start with the contact defaults, then use the account and tax-rate helpers if you need to choose or verify a code. If a line has no `taxType`, Xero uses the selected account's default tax rate.
 
 ## A quick local check
 

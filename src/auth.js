@@ -4,7 +4,12 @@ import { spawn } from "node:child_process";
 import { exchangeAuthorizationCode, fetchConnections, getConfiguredTenantId } from "./xero.js";
 import { getTokenPath, saveTokens } from "./token-store.js";
 
-const scopes = ["offline_access", "accounting.contacts.read", "accounting.invoices"];
+const scopes = [
+  "offline_access",
+  "accounting.contacts.read",
+  "accounting.invoices",
+  "accounting.settings.read",
+];
 
 function config() {
   const clientId = process.env.XERO_CLIENT_ID;
