@@ -1,4 +1,5 @@
 import test from "node:test";
+import { invoiceRevision } from "../src/invoice-edits.js";
 import assert from "node:assert/strict";
 import { createHarness, resultData } from "./helpers/mcp.js";
 
@@ -30,13 +31,13 @@ test("create forces ACCREC DRAFT and forwards line IDs and item codes", async (t
   const result = await call("xero_create_draft_invoice", createArgs);
   assert.notEqual(result.isError, true);
   assert.deepEqual(calls, [["POST", "/Invoices", { query: { unitdp: 4 }, body: { Invoices: [{ Type: "ACCREC", Status: "DRAFT", LineAmountTypes: "Exclusive", Contact: { ContactID: contactId }, Date: "2026-09-08", DueDate: "2026-09-22", LineItems: [mappedLine] }] } }]]);
-  assert.deepEqual(resultData(result), { invoiceId, invoiceNumber: "INV-123", type: "ACCREC", status: "DRAFT", contact: { contactId, name: "Fixture" }, date: "2026-09-08", dueDate: "2026-09-22", total: 172.5, amountDue: 172.5, currency: "NZD", subTotal: 150, totalTax: 22.5, lineItems: invoice.LineItems });
+  assert.deepEqual(resultData(result), { invoiceId, revision: invoiceRevision(invoice), invoiceNumber: "INV-123", type: "ACCREC", status: "DRAFT", contact: { contactId, name: "Fixture" }, date: "2026-09-08", dueDate: "2026-09-22", total: 172.5, amountDue: 172.5, currency: "NZD", subTotal: 150, totalTax: 22.5, lineItems: invoice.LineItems });
 });
 
 for (const status of ["SUBMITTED", "AUTHORISED", "PAID", "VOIDED", "DELETED", "SENT", "UNKNOWN", undefined]) {
   test(`update rejects non-DRAFT ${status} before POST`, async (t) => {
     const { call, calls } = await createHarness(t, () => ({ Invoices: [{ ...invoice, Status: status }] }));
-    const result = await call("xero_update_draft_invoice", { invoiceId, reference: "Changed" });
+    const result = await call("xero_update_draft_invoice", { invoiceId, expectedRevision: invoiceRevision(invoice), reference: "Changed" });
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /not DRAFT/);
     assert.deepEqual(calls, [["GET", `/Invoices/${invoiceId}`, { query: { unitdp: 4 } }]]);
@@ -45,7 +46,7 @@ for (const status of ["SUBMITTED", "AUTHORISED", "PAID", "VOIDED", "DELETED", "S
 
 test("no-op update fails without HTTP", async (t) => {
   const { call, calls } = await createHarness(t);
-  const result = await call("xero_update_draft_invoice", { invoiceId });
+  const result = await call("xero_update_draft_invoice", { invoiceId, expectedRevision: invoiceRevision(invoice) });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /at least one field/);
   assert.equal(calls.length, 0);
@@ -54,7 +55,7 @@ test("no-op update fails without HTTP", async (t) => {
 for (const tool of ["xero_get_invoice", "xero_update_draft_invoice", "xero_create_draft_invoice"]) {
   test(`${tool} reports missing invoice`, async (t) => {
     const { call, calls } = await createHarness(t);
-    const result = await call(tool, tool === "xero_create_draft_invoice" ? createArgs : { invoiceId, reference: "Changed" });
+    const result = await call(tool, tool === "xero_create_draft_invoice" ? createArgs : { invoiceId, expectedRevision: invoiceRevision(invoice), reference: "Changed" });
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /did not return/);
     if (tool === "xero_update_draft_invoice") assert.deepEqual(calls, [["GET", `/Invoices/${invoiceId}`, { query: { unitdp: 4 } }]]);
@@ -64,7 +65,7 @@ for (const tool of ["xero_get_invoice", "xero_update_draft_invoice", "xero_creat
 for (const tool of ["xero_create_draft_invoice", "xero_update_draft_invoice"]) {
   test(`${tool} reports unexpected post-write status`, async (t) => {
     const { call, calls } = await createHarness(t, (method) => ({ Invoices: [{ ...invoice, Status: method === "GET" ? "DRAFT" : "AUTHORISED" }] }));
-    const result = await call(tool, tool === "xero_create_draft_invoice" ? createArgs : { invoiceId, reference: "Changed" });
+    const result = await call(tool, tool === "xero_create_draft_invoice" ? createArgs : { invoiceId, expectedRevision: invoiceRevision(invoice), reference: "Changed" });
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /Safety check failed.*AUTHORISED.*expected DRAFT/);
     assert.equal(calls.at(-1)[0], "POST");
@@ -73,14 +74,14 @@ for (const tool of ["xero_create_draft_invoice", "xero_update_draft_invoice"]) {
 
 test("line update replaces complete set and preserves line IDs/item codes", async (t) => {
   const { call, calls } = await createHarness(t, () => ({ Invoices: [invoice] }));
-  const result = await call("xero_update_draft_invoice", { invoiceId, lineItems: [line] });
+  const result = await call("xero_update_draft_invoice", { invoiceId, expectedRevision: invoiceRevision(invoice), lineItems: [line] });
   assert.notEqual(result.isError, true);
   assert.deepEqual(calls, [["GET", `/Invoices/${invoiceId}`, { query: { unitdp: 4 } }], ["POST", `/Invoices/${invoiceId}`, { query: { unitdp: 4 }, body: { Invoices: [{ InvoiceID: invoiceId, Status: "DRAFT", LineItems: [mappedLine] }] } }]]);
 });
 
 test("reference-only update omits LineItems and allows clearing reference", async (t) => {
   const { call, calls } = await createHarness(t, () => ({ Invoices: [invoice] }));
-  const result = await call("xero_update_draft_invoice", { invoiceId, reference: "" });
+  const result = await call("xero_update_draft_invoice", { invoiceId, expectedRevision: invoiceRevision(invoice), reference: "" });
   assert.notEqual(result.isError, true);
   assert.deepEqual(calls[1][2].body.Invoices[0], { InvoiceID: invoiceId, Status: "DRAFT", Reference: "" });
 });
@@ -116,7 +117,7 @@ test("invalid and wrong-case tax basis fail SDK validation before HTTP", async (
 for (const changes of [{ reference: "Changed" }, { lineItems: [line] }]) {
   test(`update of Inclusive invoice omits tax basis for ${Object.keys(changes)[0]}`, async (t) => {
     const { call, calls } = await createHarness(t, () => ({ Invoices: [{ ...invoice, LineAmountTypes: "Inclusive" }] }));
-    const result = await call("xero_update_draft_invoice", { invoiceId, ...changes });
+    const result = await call("xero_update_draft_invoice", { invoiceId, expectedRevision: invoiceRevision({ ...invoice, LineAmountTypes: "Inclusive" }), ...changes });
     assert.notEqual(result.isError, true);
     assert.equal(resultData(result).lineAmountTypes, "Inclusive");
     assert.deepEqual(calls.map(([method]) => method), ["GET", "POST"]);
@@ -127,7 +128,7 @@ for (const changes of [{ reference: "Changed" }, { lineItems: [line] }]) {
 for (const tool of ["xero_get_invoice", "xero_create_draft_invoice", "xero_update_draft_invoice"]) {
   test(`${tool} does not invent missing response tax basis`, async (t) => {
     const { call } = await createHarness(t, () => ({ Invoices: [invoice] }));
-    const result = await call(tool, tool === "xero_create_draft_invoice" ? createArgs : { invoiceId, reference: "Changed" });
+    const result = await call(tool, tool === "xero_create_draft_invoice" ? createArgs : { invoiceId, expectedRevision: invoiceRevision(invoice), reference: "Changed" });
     assert.notEqual(result.isError, true);
     assert.equal(Object.hasOwn(resultData(result), "lineAmountTypes"), false);
   });
@@ -147,7 +148,7 @@ test("four-decimal price survives get-to-update with precision on both update re
   const fetched = resultData(await call("xero_get_invoice", { invoiceId }));
   assert.equal(fetched.lineItems[0].UnitAmount, 0.0611);
   const fetchedLine = fetched.lineItems[0];
-  const result = await call("xero_update_draft_invoice", { invoiceId, lineItems: [{ description: fetchedLine.Description, quantity: fetchedLine.Quantity, unitAmount: fetchedLine.UnitAmount, accountCode: fetchedLine.AccountCode, lineItemId: fetchedLine.LineItemID, itemCode: fetchedLine.ItemCode, taxType: fetchedLine.TaxType }] });
+  const result = await call("xero_update_draft_invoice", { invoiceId, expectedRevision: fetched.revision, lineItems: [{ description: fetchedLine.Description, quantity: fetchedLine.Quantity, unitAmount: fetchedLine.UnitAmount, accountCode: fetchedLine.AccountCode, lineItemId: fetchedLine.LineItemID, itemCode: fetchedLine.ItemCode, taxType: fetchedLine.TaxType }] });
   assert.notEqual(result.isError, true);
   assert.deepEqual(calls.slice(0, 2), [["GET", `/Invoices/${invoiceId}`, { query: { unitdp: 4 } }], ["GET", `/Invoices/${invoiceId}`, { query: { unitdp: 4 } }]]);
   assert.deepEqual(calls[2], ["POST", `/Invoices/${invoiceId}`, { query: { unitdp: 4 }, body: { Invoices: [{ InvoiceID: invoiceId, Status: "DRAFT", LineItems: [{ ...mappedLine, UnitAmount: 0.0611 }] }] } }]);
@@ -203,7 +204,7 @@ test("mixed invoice update retains descriptive and monetary IDs and item linkage
   const noteId = "44444444-4444-4444-8444-444444444444";
   const existingLines = [{ LineItemID: noteId, Description: "Existing notes" }, mappedLine];
   const { call, calls } = await createHarness(t, () => ({ Invoices: [{ ...invoice, LineItems: existingLines }] }));
-  const result = await call("xero_update_draft_invoice", { invoiceId, lineItems: [{ description: "Existing notes", lineItemId: noteId }, { ...line, unitAmount: 0.0611 }] });
+  const result = await call("xero_update_draft_invoice", { invoiceId, expectedRevision: invoiceRevision({ ...invoice, LineItems: existingLines }), lineItems: [{ description: "Existing notes", lineItemId: noteId }, { ...line, unitAmount: 0.0611 }] });
   assert.notEqual(result.isError, true);
   assert.deepEqual(calls, [["GET", `/Invoices/${invoiceId}`, { query: { unitdp: 4 } }], ["POST", `/Invoices/${invoiceId}`, { query: { unitdp: 4 }, body: { Invoices: [{ InvoiceID: invoiceId, Status: "DRAFT", LineItems: [{ LineItemID: noteId, Description: "Existing notes" }, { ...mappedLine, UnitAmount: 0.0611 }] }] } }]]);
 });
@@ -237,7 +238,7 @@ test("description-only arrays accept inclusive length boundaries without requiri
 
 test("mixed-line non-DRAFT update still fails preflight without POST", async (t) => {
   const { call, calls } = await createHarness(t, () => ({ Invoices: [{ ...invoice, Status: "AUTHORISED" }] }));
-  const result = await call("xero_update_draft_invoice", { invoiceId, lineItems: [{ description: "Notes" }, line] });
+  const result = await call("xero_update_draft_invoice", { invoiceId, expectedRevision: invoiceRevision(invoice), lineItems: [{ description: "Notes" }, line] });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /not DRAFT/);
   assert.deepEqual(calls, [["GET", `/Invoices/${invoiceId}`, { query: { unitdp: 4 } }]]);
@@ -365,7 +366,7 @@ test("currency is advertised only on create and update payload cannot mutate cur
   const tools = (await client.listTools()).tools;
   assert.equal(Object.hasOwn(tools.find(({ name }) => name === "xero_create_draft_invoice").inputSchema.properties, "currencyCode"), true);
   assert.equal(Object.hasOwn(tools.find(({ name }) => name === "xero_update_draft_invoice").inputSchema.properties, "currencyCode"), false);
-  const result = await call("xero_update_draft_invoice", { invoiceId, reference: "Changed", currencyCode: "EUR" });
+  const result = await call("xero_update_draft_invoice", { invoiceId, expectedRevision: invoiceRevision({ ...invoice, CurrencyCode: "USD" }), reference: "Changed", currencyCode: "EUR" });
   assert.notEqual(result.isError, true);
   assert.equal(resultData(result).currency, "USD");
   assert.deepEqual(calls[1][2].body.Invoices[0], { InvoiceID: invoiceId, Status: "DRAFT", Reference: "Changed" });

@@ -1,8 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { invoiceRevision, patchInvoiceLines, preserveReplacementDiscounts, invoiceChanges } from "./invoice-edits.js";
 
 export function createServer({ xeroRequest }) {
-  const server = new McpServer({ name: "xero-mcp", version: "0.3.0" });
+  const server = new McpServer({ name: "xero-mcp", version: "0.3.0" }, { instructions: `For explicitly requested draft-invoice edits, first read xero_get_invoice and pass its revision as expectedRevision. Prefer lineItemPatches for narrow changes; preserve discounts and other omitted fields. Report changeSummary fields and resulting totals. Choose tax types using names and codes together, never the percentage alone. For recent contact billing, use xero_list_invoices with contactId and includeLineItems: true.` });
 
   function hasSupportedUnitPrecision(value) {
     const [mantissa, exponent = "0"] = String(value).split("e");
@@ -10,15 +11,21 @@ export function createServer({ xeroRequest }) {
     return fractionalDigits - Number(exponent) <= 4;
   }
 
+  const updatesInFlight = new Set();
+  const discountFields = {
+    discountRate: z.number().finite().min(0).max(100).optional().describe("Percentage discount; set 0 explicitly to remove"),
+    discountAmount: z.number().finite().nonnegative().optional().describe("Fixed discount; set 0 explicitly to remove"),
+  };
   const monetaryLineSchema = z.object({
     lineItemId: z.string().uuid().optional().describe("Existing Xero LineItemID to preserve when replacing draft invoice lines"),
     itemCode: z.string().min(1).max(30).optional().describe("Optional existing Xero item code"),
+    ...discountFields,
     description: z.string().min(1).max(4000),
     quantity: z.number().positive(),
     unitAmount: z.number().finite().refine(hasSupportedUnitPrecision, "Unit amount must have at most 4 decimal places."),
     accountCode: z.string().min(1).max(20),
     taxType: z.string().min(1).max(50).optional(),
-  });
+  }).refine((line) => line.discountRate === undefined || line.discountAmount === undefined, "Choose discountRate or discountAmount, not both.");
 
   const descriptionLineSchema = z.object({
     description: z.string().min(1).max(4000),
@@ -28,9 +35,23 @@ export function createServer({ xeroRequest }) {
     accountCode: z.never().optional(),
     itemCode: z.never().optional(),
     taxType: z.never().optional(),
+    discountRate: z.never().optional(),
+    discountAmount: z.never().optional(),
   });
   const lineItemSchema = z.union([monetaryLineSchema, descriptionLineSchema])
     .describe("A monetary line, or a description-only line with optional existing lineItemId and no monetary, item, or tax fields");
+
+  const linePatchSchema = z.object({
+    lineItemId: z.string().uuid(),
+    description: z.string().min(1).max(4000).optional(),
+    quantity: z.number().positive().optional(),
+    unitAmount: z.number().finite().refine(hasSupportedUnitPrecision, "Unit amount must have at most 4 decimal places.").optional(),
+    accountCode: z.string().min(1).max(20).optional(),
+    itemCode: z.string().min(1).max(30).optional(),
+    taxType: z.string().min(1).max(50).optional(),
+    ...discountFields,
+  }).strict().refine((line) => Object.keys(line).length > 1, "Provide at least one field to patch.")
+    .refine((line) => line.discountRate === undefined || line.discountAmount === undefined, "Choose discountRate or discountAmount, not both.");
 
   function text(data) {
     return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
@@ -58,6 +79,7 @@ export function createServer({ xeroRequest }) {
   function fullInvoice(invoice) {
     return {
       ...invoiceSummary(invoice),
+      revision: invoiceRevision(invoice),
       reference: invoice.Reference,
       lineAmountTypes: invoice.LineAmountTypes,
       subTotal: invoice.SubTotal,
@@ -79,6 +101,8 @@ export function createServer({ xeroRequest }) {
         AccountCode: line.accountCode,
       } : {}),
       ...(line.taxType ? { TaxType: line.taxType } : {}),
+      ...(line.discountRate !== undefined ? { DiscountRate: line.discountRate } : {}),
+      ...(line.discountAmount !== undefined ? { DiscountAmount: line.discountAmount } : {}),
     }));
   }
 
@@ -196,6 +220,7 @@ export function createServer({ xeroRequest }) {
           .map((taxRate) => ({
             taxType: taxRate.TaxType,
             name: taxRate.Name,
+            label: `${taxRate.Name} (${taxRate.TaxType})`,
             rate: taxRate.DisplayTaxRate ?? taxRate.EffectiveRate,
             canApplyToRevenue: taxRate.CanApplyToRevenue,
           }));
@@ -210,15 +235,16 @@ export function createServer({ xeroRequest }) {
     "xero_list_invoices",
     {
       title: "List Xero invoices",
-      description: "List one page of Xero invoices, newest first. Optional contact and exact invoice-number filters combine. Increment page until fewer than limit records are returned.",
+      description: "List one page of invoices, newest by invoice date first. Optional contact and exact invoice-number filters combine. Use includeLineItems for a contact billing lookup with full invoice details in one response. Increment page until fewer than limit records are returned.",
       inputSchema: {
         contactId: z.string().uuid().optional().describe("Optional Xero ContactID filter"),
         limit: z.number().int().min(1).max(100).default(20).describe("Maximum invoices to return"),
         page: z.number().int().positive().default(1).describe("Page of matching invoices to return"),
+        includeLineItems: z.boolean().default(false).describe("Include full line items for compact contact billing lookup"),
         invoiceNumber: z.string().trim().min(1).max(255).refine((value) => !value.includes(","), "Provide one invoice number without commas.").optional().describe("Exact invoice number; commas are not supported"),
       },
     },
-    async ({ contactId, limit, page, invoiceNumber }) => {
+    async ({ contactId, limit, page, invoiceNumber, includeLineItems }) => {
       try {
         const result = await xeroRequest("GET", "/Invoices", {
           query: {
@@ -230,7 +256,18 @@ export function createServer({ xeroRequest }) {
             ...(invoiceNumber !== undefined ? { InvoiceNumbers: invoiceNumber } : {}),
           },
         });
-        return text((result.Invoices ?? []).map(invoiceSummary));
+        const invoices = result.Invoices ?? [];
+        if (!includeLineItems) return text(invoices.map(invoiceSummary));
+        const details = [];
+        for (const invoice of invoices) {
+          if (Array.isArray(invoice.LineItems) && invoice.LineItems.length > 0) details.push(fullInvoice(invoice));
+          else {
+            const detail = await xeroRequest("GET", `/Invoices/${encodeURIComponent(invoice.InvoiceID)}`, { query: { unitdp: 4 } });
+            if (!detail.Invoices?.[0]) throw new Error(`Xero did not return invoice ${invoice.InvoiceID}.`);
+            details.push(fullInvoice(detail.Invoices[0]));
+          }
+        }
+        return text(details);
       } catch (error) {
         return apiError(error);
       }
@@ -241,7 +278,7 @@ export function createServer({ xeroRequest }) {
     "xero_get_invoice",
     {
       title: "Get Xero invoice",
-      description: "Fetch one Xero invoice, including all its line items.",
+      description: "Fetch one Xero invoice including line items and a revision required as expectedRevision for any update.",
       inputSchema: { invoiceId: z.string().uuid().describe("Xero InvoiceID") },
     },
     async ({ invoiceId }) => {
@@ -291,6 +328,7 @@ export function createServer({ xeroRequest }) {
         });
         const invoice = result.Invoices?.[0];
         if (!invoice) throw new Error("Xero did not return the created invoice.");
+        if (invoice.HasErrors || invoice.ValidationErrors?.length) throw new Error(`Xero rejected invoice: ${JSON.stringify(invoice.ValidationErrors ?? [])}`);
         if (invoice.Status !== "DRAFT") throw new Error(`Safety check failed: Xero returned ${invoice.Status}, expected DRAFT.`);
         return text(fullInvoice(invoice));
       } catch (error) {
@@ -303,21 +341,32 @@ export function createServer({ xeroRequest }) {
     "xero_update_draft_invoice",
     {
       title: "Update draft Xero invoice",
-      description: "Update only a DRAFT Xero invoice. Authorised, paid, sent, and other non-draft invoices are rejected. lineItems replaces the complete line set; pass existing lineItemId values to preserve those lines.",
+      description: "Update only a DRAFT invoice using expectedRevision from xero_get_invoice. Prefer lineItemPatches for narrow edits: omitted fields and other lines are preserved. lineItems intentionally replaces the complete line set; existing IDs preserve omitted discounts. Returns actual before/after changes and totals. Rejects stale revisions before writing; external edits during the request cannot be locked.",
       inputSchema: {
         invoiceId: z.string().uuid().describe("Xero InvoiceID"),
         reference: z.string().max(255).optional(),
         invoiceDate: z.string().date().optional().describe("Replacement invoice date as YYYY-MM-DD"),
         dueDate: z.string().date().optional().describe("Replacement due date as YYYY-MM-DD"),
+        expectedRevision: z.string().regex(/^[a-f0-9]{64}$/).describe("Revision returned by xero_get_invoice; stale reads are rejected"),
+        lineItemPatches: z.array(linePatchSchema).min(1).max(100).optional(),
         lineItems: z.array(lineItemSchema).min(1).max(100).optional(),
       },
     },
-    async ({ invoiceId, reference, invoiceDate, dueDate, lineItems }) => {
+    async ({ invoiceId, expectedRevision, reference, invoiceDate, dueDate, lineItems, lineItemPatches }) => {
+      let ownsLock = false;
       try {
-        if (reference === undefined && invoiceDate === undefined && dueDate === undefined && lineItems === undefined) {
+        if (reference === undefined && invoiceDate === undefined && dueDate === undefined && lineItems === undefined && lineItemPatches === undefined) {
           throw new Error("Provide at least one field to update.");
         }
-        await getDraftInvoice(invoiceId);
+        if (lineItems !== undefined && lineItemPatches !== undefined) throw new Error("Choose lineItemPatches or complete lineItems replacement, not both.");
+        if (updatesInFlight.has(invoiceId)) throw new Error("An update to this invoice is already in progress. Read it again after that update completes.");
+        updatesInFlight.add(invoiceId);
+        ownsLock = true;
+        const before = await getDraftInvoice(invoiceId);
+        if (invoiceRevision(before) !== expectedRevision) throw new Error("Invoice changed since it was read. No update was sent. Read the invoice again and review your changes.");
+        const replacementLines = lineItemPatches !== undefined
+          ? patchInvoiceLines(before.LineItems ?? [], lineItemPatches)
+          : lineItems !== undefined ? preserveReplacementDiscounts(before.LineItems ?? [], toXeroLineItems(lineItems)) : undefined;
         const result = await xeroRequest("POST", `/Invoices/${encodeURIComponent(invoiceId)}`, {
           query: { unitdp: 4 },
           body: {
@@ -327,16 +376,20 @@ export function createServer({ xeroRequest }) {
               ...(reference !== undefined ? { Reference: reference } : {}),
               ...(invoiceDate !== undefined ? { Date: invoiceDate } : {}),
               ...(dueDate !== undefined ? { DueDate: dueDate } : {}),
-              ...(lineItems !== undefined ? { LineItems: toXeroLineItems(lineItems) } : {}),
+              ...(replacementLines !== undefined ? { LineItems: replacementLines } : {}),
             }],
           },
         });
         const invoice = result.Invoices?.[0];
         if (!invoice) throw new Error(`Xero did not return updated invoice ${invoiceId}.`);
+        if (invoice.HasErrors || invoice.ValidationErrors?.length) throw new Error(`Xero rejected invoice: ${JSON.stringify(invoice.ValidationErrors ?? [])}`);
         if (invoice.Status !== "DRAFT") throw new Error(`Safety check failed: Xero returned ${invoice.Status}, expected DRAFT.`);
-        return text(fullInvoice(invoice));
+        const after = fullInvoice(invoice);
+        return text({ ...after, changeSummary: invoiceChanges(fullInvoice(before), after) });
       } catch (error) {
         return apiError(error);
+      } finally {
+        if (ownsLock) updatesInFlight.delete(invoiceId);
       }
     },
   );
