@@ -1,9 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { invoiceRevision, patchInvoiceLines, preserveReplacementDiscounts, invoiceChanges } from "./invoice-edits.js";
+import { registerReviewTools } from "./review.js";
+import { registerContextTool } from "./context.js";
+import { registerCreditNoteTools } from "./credit-notes.js";
+import { registerGuidance, reviewServerInstructions } from "./guidance.js";
 
-export function createServer({ xeroRequest }) {
-  const server = new McpServer({ name: "xero-mcp", version: "0.3.0" }, { instructions: `For explicitly requested draft-invoice edits, first read xero_get_invoice and pass its revision as expectedRevision. Prefer lineItemPatches for narrow changes; preserve discounts and other omitted fields. Report changeSummary fields and resulting totals. Choose tax types using names and codes together, never the percentage alone. For recent contact billing, use xero_list_invoices with contactId and includeLineItems: true.` });
+export function createServer({ xeroRequest, loadTokens }) {
+  const server = new McpServer({ name: "xero-mcp", version: "0.4.0" }, { instructions: `${reviewServerInstructions} For explicitly requested draft-invoice edits, first read xero_get_invoice and pass its revision as expectedRevision. Prefer lineItemPatches for narrow changes; preserve discounts and other omitted fields. Report changeSummary fields and resulting totals. Choose tax types using names and codes together, never the percentage alone. For recent contact billing, use xero_list_invoices with contactId and includeLineItems: true.` });
 
   function hasSupportedUnitPrecision(value) {
     const [mantissa, exponent = "0"] = String(value).split("e");
@@ -394,5 +398,9 @@ export function createServer({ xeroRequest }) {
     },
   );
 
+  registerReviewTools(server, xeroRequest);
+  registerContextTool(server, xeroRequest, loadTokens);
+  registerCreditNoteTools(server, xeroRequest);
+  registerGuidance(server);
   return server;
 }

@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { exchangeAuthorizationCode, fetchConnections, getConfiguredTenantId } from "./xero.js";
 import { getTokenPath, saveTokens } from "./token-store.js";
+import { selectTenant } from "./tenant-selection.js";
 
 const scopes = [
   "offline_access",
@@ -10,6 +11,17 @@ const scopes = [
   "accounting.invoices",
   "accounting.settings.read",
 ];
+if (process.env.XERO_REVIEW_SCOPES === "1") {
+  scopes.push(
+    "accounting.banktransactions.read",
+    "accounting.payments.read",
+    "accounting.manualjournals.read",
+    "accounting.reports.profitandloss.read",
+    "accounting.reports.balancesheet.read",
+    "accounting.reports.trialbalance.read",
+    "accounting.reports.taxreports.read",
+  );
+}
 
 function config() {
   const clientId = process.env.XERO_CLIENT_ID;
@@ -94,14 +106,7 @@ async function main() {
   const tokens = await exchangeAuthorizationCode(code, redirectUri);
   const connections = await fetchConnections(tokens.access_token);
   const configuredTenantId = getConfiguredTenantId();
-  const tenant = configuredTenantId
-    ? connections.find((connection) => connection.tenantId === configuredTenantId)
-    : connections[0];
-  if (!tenant) {
-    throw new Error(configuredTenantId
-      ? `XERO_TENANT_ID ${configuredTenantId} is not available to this authorised user.`
-      : "No Xero organisations were connected for this authorised user.");
-  }
+  const tenant = selectTenant(connections, configuredTenantId);
   await saveTokens({ ...tokens, tenantId: tenant.tenantId });
   console.log(`\nConnected to ${tenant.tenantName ?? tenant.tenantId}.`);
   console.log(`Tokens saved to ${getTokenPath()}`);

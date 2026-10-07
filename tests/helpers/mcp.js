@@ -2,9 +2,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../../src/server.js";
 
-export async function createHarness(t, respond = () => ({ Invoices: [] })) {
+export async function createHarness(t, respond = () => ({ Invoices: [] }), options = {}) {
   const calls = [];
-  const server = createServer({ xeroRequest: async (...args) => {
+  const server = createServer({ ...options, xeroRequest: async (...args) => {
     calls.push(args);
     return respond(...args);
   } });

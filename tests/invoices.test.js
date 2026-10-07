@@ -11,9 +11,12 @@ const createArgs = { contactId, invoiceDate: "2026-09-08", dueDate: "2026-09-22"
 const invoice = { InvoiceID: invoiceId, InvoiceNumber: "INV-123", Type: "ACCREC", Status: "DRAFT", Contact: { ContactID: contactId, Name: "Fixture" }, DateString: "2026-09-08", DueDateString: "2026-09-22", CurrencyCode: "NZD", Total: 172.5, SubTotal: 150, TotalTax: 22.5, AmountDue: 172.5, LineItems: [{ LineItemID: lineItemId, Description: "Consulting" }] };
 const mappedLine = { LineItemID: lineItemId, ItemCode: "CONSULT", Description: "Consulting", Quantity: 2, UnitAmount: 75, AccountCode: "200", TaxType: "OUTPUT" };
 
-test("registers exactly the eight existing tools", async (t) => {
+test("retains the eight existing tools", async (t) => {
   const { client } = await createHarness(t);
-  assert.deepEqual((await client.listTools()).tools.map(({ name }) => name).sort(), ["xero_find_contact", "xero_get_contact_defaults", "xero_list_revenue_accounts", "xero_list_revenue_tax_rates", "xero_list_invoices", "xero_get_invoice", "xero_create_draft_invoice", "xero_update_draft_invoice"].sort());
+  const names = new Set((await client.listTools()).tools.map(({ name }) => name));
+  for (const name of ["xero_find_contact", "xero_get_contact_defaults", "xero_list_revenue_accounts", "xero_list_revenue_tax_rates", "xero_list_invoices", "xero_get_invoice", "xero_create_draft_invoice", "xero_update_draft_invoice"]) {
+    assert.equal(names.has(name), true, `${name} should remain registered`);
+  }
 });
 
 test("actual SDK rejects invalid schema input before HTTP", async (t) => {
