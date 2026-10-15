@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — 2026-10-16
+
+- Add customer quote listing/details and draft-only creation/editing with explicit financial inputs and revision checks. No sending or status transitions.
+- Add original quote/invoice PDF downloads as binary MCP resources, with authenticated resource reads and PDF validation.
+- Confirm the existing `accounting.invoices` grant covers Quotes; no scope expansion is needed. Live endpoint access and client PDF saving remain unverified.
+- Add mocked schema, API mapping, tax, error, concurrency and binary PDF coverage. Existing hosted-service work is excluded from this release.
+
 ## 0.4.0 — 2026-10-07
 
 ### Added

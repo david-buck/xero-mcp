@@ -196,3 +196,39 @@ npm start
 ## Keep the private bits private
 
 `.env` and `node_modules` are ignored by Git. Tokens live outside the repository at `~/.xero-mcp/tokens.json` with local-only file permissions. Do not commit your `.env` file or paste your Client Secret into an issue.
+
+## Draft quotes and original PDFs
+
+Six additional tools are available in local STDIO mode:
+
+| Tool | Behavior |
+| --- | --- |
+| `xero_list_quotes` | Page through customer sales quotes (up to 100 per page), optionally filtering by contact, status and issue-date range. |
+| `xero_get_quote` | Read full details and a revision for editing. |
+| `xero_create_draft_quote` | Create DRAFT only with explicit contact, title, summary, terms, issue/expiry dates, currency, tax basis and lines. Empty title/summary/terms are explicit choices. |
+| `xero_update_draft_quote` | Edit DRAFT only with `expectedRevision` from the latest read. Omitted fields are preserved. |
+| `xero_get_quote_pdf` | Download Xero's original quote PDF as an embedded MCP binary resource. |
+| `xero_get_invoice_pdf` | Download Xero's original invoice PDF as an embedded MCP binary resource. |
+
+Monetary quote lines require description, positive quantity, nonnegative unit price (up to four decimals), account code and explicit tax type; percentage discounts are optional. Description-only lines carry scope text without financial fields. Use existing contact/account/tax lookup tools to resolve valid codes, retaining tax names and codes together. Creation requires `lineAmountTypes` (`Exclusive`, `Inclusive`, `NoTax`) and `currencyCode`; no invoice/contact financial defaults are silently applied. Quote tax basis maps to Xero's `EXCLUSIVE`, `INCLUSIVE`, `NOTAX` values. `currencyRate` is optional on creation: omission explicitly delegates exchange-rate selection to Xero; provide it when the agreed rate matters. Changing an existing quote's currency requires an explicit exchange rate.
+
+An update's `lineItems` intentionally replaces the entire line set, including discounts and tracking: inspect all lines before replacement. Narrow metadata changes omit lines altogether. Revisions and in-process locks reject stale/overlapping writes before submission, but Xero cannot atomically lock out edits from other clients between read and write. Reconcile any uncertain creation in Xero before retrying; these local quote tools do not provide durable creation idempotency. Tools never send, email, accept, invoice, or otherwise transition a quote out of DRAFT. No generic API escape hatch is exposed.
+
+PDFs use authenticated GET on `/Quotes/{id}` or `/Invoices/{id}` with `Accept: application/pdf`, following the official OpenAPI operation's `x-path`. Bytes are read without text decoding and checked for PDF content type/signature; HTTP failures retain Xero status and response detail in local mode. Each result contains a file URI ending in `.pdf`, MIME type and base64 blob, rather than JSON-encoded PDF text. Resource reads fetch again using the current connection; there is no disk cache or external upload. The MCP client must support embedded blob resources to offer a download/save action. This server does not upload PDFs to ChatGPT Library or guarantee a client-specific attachment UI.
+
+This remains a local STDIO extension. Hosted deployment and its permission policies remain outside the supported release. `enableQuoteWrites: false` omits both quote write tools for integrations that require read-only quote access.
+
+### Authorization and activation
+
+Xero's current [OAuth scope table](https://developer.xero.com/documentation/guides/oauth2/scopes/#accounting-api) lists both Quotes and Invoices under the granular `accounting.invoices` scope (view and manage); `accounting.invoices.read` covers the same resources for GET requests only. The existing auth script requests `accounting.invoices`, and a read-only check of saved scope metadata confirmed that the local grant includes it. No additional scope or OAuth flow is indicated for these quote tools or generated quote/invoice PDFs. These PDFs use accounting endpoints, not attachment endpoints. The Accounting OpenAPI still lists legacy `accounting.transactions` scope names; those labels do not establish a gap in this granular grant. No credentials or grants were changed.
+
+Scope sufficiency does not establish operational access: grant validity, tenant access and the authorising user's role remain untested against the live endpoints. PDF byte handling and resource retrieval were verified only with mocks. The configured Codex client uses local STDIO, but successful retrieval and saving of a PDF in that client has not been verified. The supported server protocol path is the embedded `application/pdf` blob or `resources/read` at the returned URI, followed by base64 decoding and saving the bytes as `.pdf`; a client-specific download interface is not guaranteed. See the [MCP resource specification](https://modelcontextprotocol.io/specification/2025-06-18/server/resources).
+
+No restart, auth flow or deployment is performed by this extension. To activate after review:
+
+1. Run `npm run check` and `npm test` in this project (all tests mock Xero).
+2. Keep the existing `accounting.invoices` grant; no scope expansion or reauthorization is indicated by the verified scope metadata.
+3. Restart/reconnect the local MCP through its client so it launches the updated `src/index.js`, then refresh the tool list (30 local tools).
+4. Verify read-only organisation context first; test quote/PDF reads only when authorized. Create the real funding-support quote only after a separate explicit request.
+
+API references: [official Xero Accounting OpenAPI](https://github.com/XeroAPI/Xero-OpenAPI/blob/master/xero_accounting.yaml), [quote endpoint documentation](https://developer.xero.com/documentation/api/accounting/quotes), [OAuth scopes](https://developer.xero.com/documentation/guides/oauth2/scopes/).

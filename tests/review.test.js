@@ -9,7 +9,7 @@ const invoiceId = "bf196f95-62a9-40ea-890f-8057ad923d98";
 test("integrated server advertises review guidance and read tools alongside draft-only invoice tools", async (t) => {
   const { client } = await createHarness(t);
   const names = new Set((await client.listTools()).tools.map((tool) => tool.name));
-  assert.equal(names.size, 24, "local release must advertise all 24 supported tools");
+  assert.equal(names.size, 30, "local release must advertise all 30 supported tools");
   for (const name of [
     "xero_review_context", "xero_review_guide", "xero_list_credit_notes", "xero_get_credit_note",
     "xero_get_profit_and_loss", "xero_list_period_invoices", "xero_create_draft_invoice", "xero_update_draft_invoice",

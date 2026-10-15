@@ -11,7 +11,7 @@
     "start": "node src/index.js",
     "auth": "node --env-file=.env src/auth.js",
     "auth:review": "XERO_REVIEW_SCOPES=1 node --env-file=.env src/auth.js",
-    "check": "node --check src/index.js && node --check src/auth.js && node --check src/xero.js && node --check src/token-store.js && node --check src/server.js && node --check src/invoice-edits.js && node --check src/review.js && node --check src/context.js && node --check src/credit-notes.js && node --check src/guidance.js && node --check src/tenant-selection.js",
+    "check": "node --check src/index.js && node --check src/auth.js && node --check src/xero.js && node --check src/token-store.js && node --check src/server.js && node --check src/invoice-edits.js && node --check src/review.js && node --check src/context.js && node --check src/credit-notes.js && node --check src/guidance.js && node --check src/tenant-selection.js && node --check src/quotes.js && node --check src/pdfs.js",
     "test": "node --test tests/*.test.js"
   },
   "dependencies": {

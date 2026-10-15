@@ -112,7 +112,7 @@ export function createXeroClient({
     return tokens;
   }
 
-  async function xeroRequest(method, path, { query, body } = {}) {
+  async function xeroRequest(method, path, { query, body, responseType = "json" } = {}) {
     const tokens = await usableTokens();
     const url = new URL(`${XERO_API_BASE}${path}`);
     for (const [key, value] of Object.entries(query ?? {})) {
@@ -124,11 +124,18 @@ export function createXeroClient({
       headers: {
         Authorization: `Bearer ${tokens.access_token}`,
         "xero-tenant-id": tokens.tenantId,
-        Accept: "application/json",
+        Accept: responseType === "pdf" ? "application/pdf" : "application/json",
         ...(body ? { "Content-Type": "application/json" } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
+    if (response.ok && responseType === "pdf") {
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/pdf" || bytes.subarray(0, 5).toString("ascii") !== "%PDF-") {
+        throw new Error(`Xero API ${method} ${path} returned an invalid PDF response.`);
+      }
+      return bytes;
+    }
     const result = await readResponse(response);
     if (!response.ok) throw responseError(method, `${path}${url.search}`, response, result);
     return result;

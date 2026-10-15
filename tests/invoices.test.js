@@ -184,7 +184,7 @@ for (const tool of ["xero_create_draft_invoice", "xero_update_draft_invoice"]) {
 
 test("SDK advertises both line variants with all recognized monetary fields forbidden in descriptive branch", async (t) => {
   const { client } = await createHarness(t);
-  for (const tool of (await client.listTools()).tools.filter(({ name }) => /create_draft|update_draft/.test(name))) {
+  for (const tool of (await client.listTools()).tools.filter(({ name }) => /(?:create|update)_draft_invoice$/.test(name))) {
     const [monetary, descriptive] = tool.inputSchema.properties.lineItems.items.anyOf;
     assert.deepEqual(monetary.required, ["description", "quantity", "unitAmount", "accountCode"]);
     assert.deepEqual(descriptive.required, ["description"]);
